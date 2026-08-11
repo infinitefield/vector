@@ -2,10 +2,32 @@ use std::collections::HashMap;
 
 use chrono::{DateTime, Utc};
 use metrics::counter;
-use quick_xml::{Reader, events::Event as XmlEvent};
+use quick_xml::{Reader, events::BytesRef, events::Event as XmlEvent};
 
 use super::config::WindowsEventLogConfig;
 use super::error::*;
+
+/// Resolve an entity reference into `out`.
+///
+/// quick-xml reports `&amp;`-style references as separate `GeneralRef` events rather than
+/// folding them into the surrounding text, so element content has to be reassembled by
+/// appending each reference as it arrives. Numeric references (`&#65;`) resolve directly;
+/// beyond the five XML predefined entities there is no DTD to resolve against, so anything
+/// else is dropped.
+fn push_entity_ref(e: &BytesRef<'_>, out: &mut String) {
+    if let Ok(Some(c)) = e.resolve_char_ref() {
+        out.push(c);
+        return;
+    }
+    match e.decode().unwrap_or_default().as_ref() {
+        "amp" => out.push('&'),
+        "lt" => out.push('<'),
+        "gt" => out.push('>'),
+        "apos" => out.push('\''),
+        "quot" => out.push('"'),
+        _ => {}
+    }
+}
 
 /// Truncate a string at a UTF-8 safe boundary, appending a suffix.
 pub(crate) fn truncate_utf8(s: &mut String, max_bytes: usize) {
@@ -126,7 +148,6 @@ enum TextTarget {
 pub fn parse_system_section(xml: &str) -> SystemFields {
     let mut fields = SystemFields::default();
     let mut reader = Reader::from_str(xml);
-    reader.trim_text(true);
     let mut buf = Vec::new();
 
     let mut in_system = false;
@@ -197,11 +218,16 @@ pub fn parse_system_section(xml: &str) -> SystemFields {
             }
             Ok(XmlEvent::Text(ref e)) => {
                 if in_system && text_target != TextTarget::None {
-                    if let Ok(text) = e.unescape() {
+                    if let Ok(text) = e.xml10_content() {
                         if text_buf.len() + text.len() <= 4096 {
                             text_buf.push_str(&text);
                         }
                     }
+                }
+            }
+            Ok(XmlEvent::GeneralRef(ref e)) => {
+                if in_system && text_target != TextTarget::None && text_buf.len() < 4096 {
+                    push_entity_ref(e, &mut text_buf);
                 }
             }
             Ok(XmlEvent::End(ref e)) => {
@@ -487,7 +513,6 @@ fn parse_section(
     inserts: &mut Vec<String>,
 ) {
     let mut reader = Reader::from_str(xml);
-    reader.trim_text(true);
 
     let mut buf = Vec::new();
     let mut inside_section = false;
@@ -535,22 +560,31 @@ fn parse_section(
                 } else if name.as_ref() == b"Data" && inside_data {
                     inside_data = false;
 
+                    // Text arrives in fragments split around entity references, so trim the
+                    // reassembled value rather than relying on the reader to trim each piece.
+                    let value = current_data_value.trim();
                     if !current_data_name.is_empty() {
-                        named_data.insert(current_data_name.clone(), current_data_value.clone());
+                        named_data.insert(current_data_name.clone(), value.to_string());
                     } else if section_name == "EventData" && inserts.len() < MAX_FIELDS {
-                        inserts.push(current_data_value.clone());
+                        inserts.push(value.to_string());
                     }
                 }
             }
             Ok(XmlEvent::Text(ref e)) => {
                 if inside_section
                     && inside_data
-                    && let Ok(text) = e.unescape()
+                    && let Ok(text) = e.xml10_content()
                 {
                     const MAX_VALUE_SIZE: usize = 1024 * 1024;
                     if current_data_value.len() + text.len() <= MAX_VALUE_SIZE {
                         current_data_value.push_str(&text);
                     }
+                }
+            }
+            Ok(XmlEvent::GeneralRef(ref e)) => {
+                const MAX_VALUE_SIZE: usize = 1024 * 1024;
+                if inside_section && inside_data && current_data_value.len() < MAX_VALUE_SIZE {
+                    push_entity_ref(e, &mut current_data_value);
                 }
             }
             Ok(XmlEvent::Eof) => break,
@@ -574,7 +608,6 @@ pub fn is_valid_bookmark_xml(xml: &str) -> bool {
 #[cfg(test)]
 pub fn extract_xml_value(xml: &str, tag: &str) -> Option<String> {
     let mut reader = Reader::from_str(xml);
-    reader.trim_text(true);
 
     let mut buf = Vec::new();
     let mut inside_target = false;
@@ -601,7 +634,7 @@ pub fn extract_xml_value(xml: &str, tag: &str) -> Option<String> {
             }
             Ok(XmlEvent::Text(ref e)) => {
                 if inside_target {
-                    match e.unescape() {
+                    match e.xml10_content() {
                         Ok(text) => {
                             if current_element.len() + text.len() > 4096 {
                                 warn!(message = "XML element text too long, truncating.");
@@ -611,6 +644,15 @@ pub fn extract_xml_value(xml: &str, tag: &str) -> Option<String> {
                         }
                         Err(_) => return None,
                     }
+                }
+            }
+            Ok(XmlEvent::GeneralRef(ref e)) => {
+                if inside_target {
+                    if current_element.len() >= 4096 {
+                        warn!(message = "XML element text too long, truncating.");
+                        break;
+                    }
+                    push_entity_ref(e, &mut current_element);
                 }
             }
             Ok(XmlEvent::End(ref e)) => {
@@ -657,6 +699,43 @@ pub fn extract_xml_attribute(xml: &str, attr_name: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_system_section_resolves_entity_references() {
+        let xml = r#"<Event><System><Computer>a &amp; b &lt;c&gt; d</Computer></System></Event>"#;
+        assert_eq!(parse_system_section(xml).computer, "a & b <c> d");
+    }
+
+    #[test]
+    fn test_system_section_resolves_numeric_char_references() {
+        let xml = "<Event><System><Computer>&#65;&#x42;C</Computer></System></Event>";
+        assert_eq!(parse_system_section(xml).computer, "ABC");
+    }
+
+    #[test]
+    fn test_system_section_trims_surrounding_whitespace() {
+        let xml = "<Event><System><Computer>   host1   </Computer></System></Event>";
+        assert_eq!(parse_system_section(xml).computer, "host1");
+    }
+
+    #[test]
+    fn test_event_data_resolves_entity_references() {
+        let xml = r#"
+        <Event>
+            <EventData>
+                <Data Name="Cmd">C:\x &amp;&amp; y &quot;z&quot;</Data>
+            </EventData>
+        </Event>
+        "#;
+
+        let config = WindowsEventLogConfig::default();
+        let result = extract_event_data(xml, &config);
+
+        assert_eq!(
+            result.structured_data.get("Cmd").map(String::as_str),
+            Some(r#"C:\x && y "z""#)
+        );
+    }
 
     const FULL_EVENT_XML: &str = r#"
     <Event xmlns="http://schemas.microsoft.com/win/2004/08/events/event">

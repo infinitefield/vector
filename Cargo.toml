@@ -314,7 +314,7 @@ azure_identity = { version = "1.0", default-features = false, features = ["clien
 azure_storage_blob = { version = "1.0", default-features = false, optional = true }
 
 # OpenDAL
-opendal = { version = "0.54", default-features = false, features = ["services-webhdfs"], optional = true }
+opendal = { version = "0.58", default-features = false, features = ["services-webhdfs", "layers-logging"], optional = true }
 
 # Tower
 tower = { version = "0.5.2", default-features = false, features = ["buffer", "limit", "retry", "timeout", "util", "balance", "discover"] }
@@ -428,7 +428,7 @@ ordered-float.workspace = true
 percent-encoding = { version = "2.3.1", default-features = false }
 postgres-openssl = { version = "0.5.1", default-features = false, features = ["runtime"], optional = true }
 pulsar = { version = "6.7.0", default-features = false, features = ["tokio-runtime", "auth-oauth2", "flate2", "lz4", "snap", "zstd"], optional = true }
-quick-junit = { version = "0.6.0" }
+quick-junit = { version = "0.7.0" }
 rand.workspace = true
 rand_distr.workspace = true
 rdkafka = { workspace = true, features = ["curl-static", "tokio", "libz", "ssl", "zstd"], optional = true }
@@ -474,7 +474,7 @@ byteorder = "1.5.0"
 [target.'cfg(windows)'.dependencies]
 windows-service = "0.8.0"
 windows = { version = "0.58", features = ["Win32_System_EventLog", "Win32_Foundation", "Win32_System_Com", "Win32_Security", "Win32_Security_Authorization", "Win32_System_Threading", "Win32_Storage_FileSystem"], optional = true }
-quick-xml = { version = "0.31", default-features = false, features = ["serialize"], optional = true }
+quick-xml = { version = "0.41", default-features = false, features = ["serialize"], optional = true }
 rdkafka = { workspace = true, features = ["cmake_build"], optional = true }
 
 [target.'cfg(unix)'.dependencies]

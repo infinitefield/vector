@@ -49,4 +49,6 @@ ignore = [
   { id = "RUSTSEC-2026-0099", reason = "rustls-webpki 0.102/0.101 is vulnerable - tonic upgrade (https://github.com/vectordotdev/vector/issues/19179)" },
   { id = "RUSTSEC-2024-0436", reason = "paste crate is unmaintained - transitive dependency via parquet v56.2.0, no safe upgrade available" },
   { id = "RUSTSEC-2026-0104", reason = "rustls-webpki 0.102/0.101 CRL parsing panic - tonic upgrade (https://github.com/vectordotdev/vector/issues/19179); 0.103 already patched to 0.103.13" },
+  { id = "RUSTSEC-2026-0173", reason = "proc-macro-error2 is unmaintained - transitive dep via mlua_derive v0.10.1. mlua 0.12 drops it, but mlua-sys sets links = \"lua\" so only one version can exist in the graph, and vrl still pins mlua ^0.11. Unblocked when vrl moves to mlua 0.12" },
+  { id = "RUSTSEC-2026-0235", reason = "rkyv 0.7 is vulnerable but unmaintained; upgrading vector-buffers to rkyv 0.8 requires a breaking migration of the on-disk disk_v2 buffer format" },
 ]
